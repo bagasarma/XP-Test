@@ -1,0 +1,91 @@
+name: Pull Request Checks
+
+on:
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  pr-validation:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20.x'
+        cache: 'npm'
+        
+    - name: Install dependencies
+      run: npm ci
+      
+    - name: Check commit messages
+      run: |
+        echo "Checking commit message format..."
+        git log --oneline origin/main..HEAD | while read line; do
+          if ! echo "$line" | grep -qE "^[a-f0-9]+ (feat|fix|docs|style|refactor|test|chore)($$.+$$)?: .+"; then
+            echo "❌ Invalid commit message format: $line"
+            echo "Expected format: type(scope): description"
+            echo "Examples: feat(tasks): add task creation, fix(ui): resolve button alignment"
+            exit 1
+          else
+            echo "✅ Valid commit message: $line"
+          fi
+        done
+        
+    - name: Check for TODO comments
+      run: |
+        echo "Checking for TODO comments..."
+        if grep -r "TODO\|FIXME\|HACK" --include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" .; then
+          echo "❌ Found TODO/FIXME/HACK comments. Please resolve before merging."
+          exit 1
+        else
+          echo "✅ No TODO comments found"
+        fi
+        
+    - name: Run tests with coverage
+      run: npm run test:coverage
+      
+    - name: Check test coverage
+      run: |
+        echo "Checking test coverage..."
+        npm run test:coverage -- --passWithNoTests --silent
+        
+    - name: Comment PR with coverage
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const fs = require('fs');
+          try {
+            const coverage = fs.readFileSync('./coverage/coverage-summary.json', 'utf8');
+            const coverageData = JSON.parse(coverage);
+            const total = coverageData.total;
+            
+            const comment = `## 📊 Test Coverage Report
+            
+            | Metric | Percentage | Status |
+            |--------|------------|--------|
+            | Lines | ${total.lines.pct}% | ${total.lines.pct >= 70 ? '✅' : '❌'} |
+            | Functions | ${total.functions.pct}% | ${total.functions.pct >= 70 ? '✅' : '❌'} |
+            | Branches | ${total.branches.pct}% | ${total.branches.pct >= 70 ? '✅' : '❌'} |
+            | Statements | ${total.statements.pct}% | ${total.statements.pct >= 70 ? '✅' : '❌'} |
+            
+            ${total.lines.pct >= 70 && total.functions.pct >= 70 && total.branches.pct >= 70 && total.statements.pct >= 70 
+              ? '🎉 Coverage meets the minimum threshold of 70%!' 
+              : '⚠️ Coverage is below the minimum threshold of 70%. Please add more tests.'}
+            `;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+          } catch (error) {
+            console.log('Coverage file not found or invalid');
+          }
